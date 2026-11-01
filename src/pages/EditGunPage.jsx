@@ -21,6 +21,13 @@ import {
 } from '../utils/draftStorage'
 import ConfirmModal from '../components/modals/ConfirmModal'
 
+const readImageDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(reader.result)
+  reader.onerror = () => reject(new Error('Selected image could not be read.'))
+  reader.readAsDataURL(file)
+})
+
 /**
  * EditGunPage — Edit an existing weapon / hardware item.
  * Supports updating specs, steps, image replacement, and draft management.
@@ -48,7 +55,9 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
   const [currentImageUrl, setCurrentImageUrl] = useState('')
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
+  const [additionalImageUrls, setAdditionalImageUrls] = useState([])
   const [uploading, setUploading] = useState(false)
+  const [uploadingAdditional, setUploadingAdditional] = useState(false)
 
   // Specs & Steps
   const [specs, setSpecs] = useState([{ name: '', quantity: '' }])
@@ -89,6 +98,7 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
             is_featured: Boolean(data.is_featured),
           })
           setCurrentImageUrl(data.image_url || data.image || '/guns/pistol.svg')
+          setAdditionalImageUrls(Array.isArray(data.image_urls) ? data.image_urls.slice(1) : [])
 
           if (data.ingredients && data.ingredients.length > 0) {
             setSpecs(data.ingredients.map((ing) => ({
@@ -134,6 +144,7 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
       if (draft.imagePreview) {
         setImagePreview(draft.imagePreview)
       }
+      if (Array.isArray(draft.additionalImageUrls)) setAdditionalImageUrls(draft.additionalImageUrls)
       setShowDraftModal(false)
       setSuccessMsg('Saved draft restored.')
       setTimeout(() => setSuccessMsg(''), 3000)
@@ -152,6 +163,7 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
       specs,
       steps,
       imagePreview: imagePreview || currentImageUrl,
+      additionalImageUrls,
     }
     const saved = saveDraft(draftData, targetId)
     if (saved) {
@@ -197,11 +209,34 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
       }
     } catch (err) {
       console.warn('Image upload failed, using local blob:', err)
-      setCurrentImageUrl(imagePreview)
-      setImageFile(null)
-      setImagePreview(null)
+      try {
+        setCurrentImageUrl(await readImageDataUrl(imageFile))
+        setImageFile(null)
+        setImagePreview(null)
+        setError(`Upload failed; using a browser-local image. ${err.message || ''}`.trim())
+      } catch (readError) {
+        setError(readError.message || 'Image could not be uploaded or read.')
+      }
     } finally {
       setUploading(false)
+    }
+  }
+
+  const handleAdditionalImagesChange = async (e) => {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (files.length === 0) return
+    try {
+      setUploadingAdditional(true)
+      setError('')
+      const results = await Promise.all(files.map((file) => uploadService.uploadImage(file)))
+      const urls = results.map((result) => result.data?.url).filter(Boolean)
+      if (urls.length !== files.length) throw new Error('Some images could not be uploaded.')
+      setAdditionalImageUrls((current) => [...current, ...urls])
+    } catch (err) {
+      setError(err.message || 'Additional images could not be uploaded.')
+    } finally {
+      setUploadingAdditional(false)
     }
   }
 
@@ -239,6 +274,11 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
     e.preventDefault()
     setError('')
 
+    if (imageFile) {
+      setError('Upload the selected primary image before saving changes.')
+      return
+    }
+
     if (!formData.name.trim() || formData.name.trim().length < 3) {
       setError('Product name must be at least 3 characters.')
       return
@@ -273,6 +313,10 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
       category: formData.category || 'makanan',
       description: formData.description.trim() || `${formData.type} caliber ${formData.caliber}.`,
       image_url: imagePreview || currentImageUrl || '/guns/pistol.svg',
+      image_urls: [
+        imagePreview || currentImageUrl || '/guns/pistol.svg',
+        ...additionalImageUrls,
+      ],
       prep_time: 15,
       cook_time: Number(formData.price) || 500,
       servings: Number(formData.servings) || 1,
@@ -385,6 +429,31 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
                 </button>
               )}
             </div>
+          </div>
+          <div className="fieldset-header additional-image-header">
+            <label htmlFor="edit-additional-images" className="form-label">Gambar tambahan</label>
+            <label htmlFor="edit-additional-images" className="btn btn--outline btn--sm">
+              <Plus size={14} /> Tambah gambar
+            </label>
+            <input
+              id="edit-additional-images"
+              type="file"
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              multiple
+              onChange={handleAdditionalImagesChange}
+              className="hidden-file-input"
+            />
+          </div>
+          {uploadingAdditional && <p className="form-hint">Mengunggah gambar…</p>}
+          <div className="image-url-grid">
+            {additionalImageUrls.map((url, index) => (
+              <div className="image-url-item" key={`${url}-${index}`}>
+                <img src={url} alt={`Gambar tambahan ${index + 1}`} loading="lazy" />
+                <button type="button" className="preview-remove-btn" onClick={() => setAdditionalImageUrls((images) => images.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Hapus gambar ${index + 1}`}>
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
           </div>
         </div>
 

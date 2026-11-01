@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import gunService from '../services/gunService'
 
 // ---------------------------------------------------------------------------
@@ -14,37 +14,65 @@ export function useGuns(params = {}) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [pagination, setPagination] = useState(null)
+  const [loadedQueryKey, setLoadedQueryKey] = useState(null)
+  const [loadedPage, setLoadedPage] = useState(null)
+  const requestId = useRef(0)
 
   // Serialise params so the effect re-runs when they change.
   const paramKey = JSON.stringify(params)
 
   const fetchGuns = useCallback(async () => {
+    const request = ++requestId.current
+    const requestParams = JSON.parse(paramKey)
+    const queryBaseKey = JSON.stringify({ ...requestParams, page: 1 })
     try {
       setLoading(true)
       setError(null)
 
-      const response = await gunService.getGuns(params)
+      const response = await gunService.getGuns(requestParams)
+      if (request !== requestId.current) return
 
       if (response.success) {
-        setGuns(response.data || [])
-        setPagination(response.pagination || null)
+        const pageData = response.data || []
+        setLoadedQueryKey(queryBaseKey)
+        setLoadedPage(Number(requestParams.page) || 1)
+        setGuns(pageData)
+        const pageInfo = response.pagination || {}
+        setPagination({
+          ...pageInfo,
+          page: Number(pageInfo.page || requestParams.page || 1),
+          limit: Number(pageInfo.limit || requestParams.limit || 12),
+          hasMore: pageInfo.hasMore ?? pageData.length >= Number(requestParams.limit || 12),
+          totalPages: Number(pageInfo.totalPages || pageInfo.total_pages || 0),
+        })
       } else {
         setError(response.message || 'Failed to fetch products.')
       }
     } catch (err) {
-      setError(err.message || 'An error occurred while fetching products.')
-      setGuns([])
+      if (request === requestId.current) {
+        setError(err.message || 'An error occurred while fetching products.')
+        setGuns([])
+      }
     } finally {
-      setLoading(false)
+      if (request === requestId.current) setLoading(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramKey])
 
   useEffect(() => {
     fetchGuns()
   }, [fetchGuns])
 
-  return { guns, loading, error, pagination, refetch: fetchGuns }
+  const currentBaseKey = JSON.stringify({ ...JSON.parse(paramKey), page: 1 })
+  const isCurrentQuery = loadedQueryKey === currentBaseKey
+  const currentPage = Number(JSON.parse(paramKey).page) || 1
+  const isCurrentPage = loadedPage === currentPage
+  return {
+    guns: isCurrentQuery && isCurrentPage ? guns : [],
+    loading,
+    error,
+    pagination: isCurrentQuery && isCurrentPage ? pagination : null,
+    refetch: fetchGuns,
+  }
 }
 
 // ---------------------------------------------------------------------------

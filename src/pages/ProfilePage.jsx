@@ -1,214 +1,157 @@
 import { useState } from 'react'
 import {
-  Shield,
-  Copy,
   Check,
-  Save,
-  Heart,
+  Copy,
   FileText,
-  Camera,
+  Heart,
+  Pencil,
   Play,
+  Shield,
+  Trash2,
 } from 'lucide-react'
 import userService from '../services/userService'
 import { useFavorites } from '../hooks/useFavorites'
+import { deleteDraft, getAllDraftIds, getDraftTimestamp, loadDraft, formatDraftTime } from '../utils/draftStorage'
+import { deleteCatalogDraft, getCatalogDrafts } from '../utils/catalogDraftStorage'
 
-/**
- * Get count of active drafts in localStorage
- */
-const getActiveDraftCount = () => {
-  try {
-    let count = 0
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key && (key.startsWith('bore_barrel_draft_') || key.startsWith('recipe_draft_'))) {
-        count++
-      }
+const readDrafts = () => [
+  ...getAllDraftIds().map((id) => {
+    const data = loadDraft(id)
+    return {
+      id,
+      kind: 'form',
+      name: data?.formData?.name || (id === 'create' ? 'Produk baru' : `Produk ${id}`),
+      timestamp: getDraftTimestamp(id),
     }
-    return count
-  } catch {
-    return 0
-  }
-}
+  }),
+  ...getCatalogDrafts().map((product) => ({
+    id: product.id,
+    kind: 'catalog',
+    name: product.name || 'Produk katalog',
+    product,
+    timestamp: product.savedAt,
+  })),
+]
 
-/**
- * ProfilePage — User identity and Armory settings.
- * Manages operator profile, identifier, favorites stats, and draft storage.
- */
-export default function ProfilePage({ onReplaySplash }) {
-  const [profile, setProfile] = useState(() => userService.getUserProfile())
-  const [username, setUsername] = useState(profile.username || 'Shooter')
-  const [bio, setBio] = useState(profile.bio || '')
-  const [avatar, setAvatar] = useState(profile.avatar || null)
+export default function ProfilePage({ onReplaySplash, onEditProfile, onResumeDraft }) {
+  const [profile] = useState(() => userService.getUserProfile())
   const [copied, setCopied] = useState(false)
-  const [feedback, setFeedback] = useState('')
-
+  const [drafts, setDrafts] = useState(readDrafts)
   const { favorites } = useFavorites()
-  const [draftCount] = useState(getActiveDraftCount)
 
-  const handleCopyId = () => {
-    if (profile.userId) {
-      navigator.clipboard.writeText(profile.userId)
+  const handleCopyId = async () => {
+    if (!profile.userId) return
+    try {
+      await navigator.clipboard.writeText(profile.userId)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      console.error('Unable to copy the profile identifier.', error)
     }
   }
 
-  const handleAvatarChange = (e) => {
-    const file = e.target.files[0]
-    if (!file) return
-
-    if (file.size > 2 * 1024 * 1024) {
-      setFeedback('Avatar image must be under 2MB.')
-      setTimeout(() => setFeedback(''), 3000)
-      return
-    }
-
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const base64 = event.target.result
-      setAvatar(base64)
-      userService.updateAvatar(base64)
-      setFeedback('Avatar updated.')
-      setTimeout(() => setFeedback(''), 3000)
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const handleSaveProfile = (e) => {
-    e.preventDefault()
-    const updated = {
-      ...profile,
-      username: username.trim() || 'Shooter',
-      bio: bio.trim(),
-      avatar,
-    }
-    const result = userService.saveUserProfile(updated)
-    if (result.success) {
-      setProfile(result.data)
-      setFeedback('Profile successfully updated.')
-      setTimeout(() => setFeedback(''), 3000)
-    } else {
-      setFeedback('Failed to save profile.')
-    }
+  const handleDeleteDraft = (draft) => {
+    const deleted = draft.kind === 'catalog'
+      ? deleteCatalogDraft(draft.id)
+      : deleteDraft(draft.id)
+    if (deleted) setDrafts(readDrafts())
   }
 
   return (
     <div className="profile-page">
-      <section className="masthead" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
+      <section className="masthead profile-masthead">
         <div>
-          <h1 className="display">Operator Profile</h1>
-          <p className="lede">
-            Operator credentials, procurement statistics, and armorer details.
-          </p>
+          <h1 className="display">Profil Pengguna</h1>
+          <p className="lede">Informasi profil dan preferensi demo Anda.</p>
         </div>
-        {onReplaySplash && (
-          <button
-            type="button"
-            className="btn btn--outline btn--sm"
-            onClick={onReplaySplash}
-            title="Replay introductory splash animation"
-          >
-            <Play size={14} /> Replay Intro
+        <div className="profile-head-actions">
+          <button type="button" className="btn btn--outline btn--sm" onClick={onEditProfile}>
+            <Pencil size={14} /> Edit profil
           </button>
-        )}
+          {onReplaySplash && (
+            <button type="button" className="btn btn--outline btn--sm" onClick={onReplaySplash}>
+              <Play size={14} /> Intro
+            </button>
+          )}
+        </div>
       </section>
 
-      {feedback && (
-        <div className="toast toast--success">
-          <Check size={18} /> {feedback}
-        </div>
-      )}
-
-      {/* Operator Card */}
-      <div className="profile-card">
+      <section className="profile-card">
         <div className="profile-card-top">
           <div className="avatar-wrap">
-            {avatar ? (
-              <img src={avatar} alt={profile.username} className="avatar-img" />
+            {profile.avatar ? (
+              <img src={profile.avatar} alt={profile.username} className="avatar-img" />
             ) : (
-              <div className="avatar-placeholder">
-                <Shield size={36} stroke="var(--brass)" />
-              </div>
+              <div className="avatar-placeholder"><Shield size={36} stroke="var(--brass)" /></div>
             )}
-            <label htmlFor="avatar-file-input" className="avatar-upload-btn" title="Upload avatar">
-              <Camera size={14} />
-              <input
-                id="avatar-file-input"
-                type="file"
-                accept="image/*"
-                onChange={handleAvatarChange}
-                className="hidden-file-input"
-              />
-            </label>
           </div>
-
           <div className="profile-identity">
             <h2 className="display">{profile.username || 'Shooter'}</h2>
             <div className="profile-id-row">
               <span className="mono-badge">{profile.userId}</span>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={handleCopyId}
-                title="Copy User ID to clipboard"
-              >
+              <button type="button" className="icon-btn" onClick={handleCopyId} title="Salin ID pengguna" aria-label="Salin ID pengguna">
                 {copied ? <Check size={14} color="var(--brass)" /> : <Copy size={14} />}
               </button>
             </div>
+            {profile.bio && <p className="profile-bio">{profile.bio}</p>}
           </div>
         </div>
-
-        {/* Stats Grid */}
         <div className="profile-stats">
           <div className="stat-item">
             <Heart size={20} className="stat-icon" stroke="var(--brass)" />
             <div className="stat-val">{favorites.length}</div>
-            <div className="stat-label">Procurement Favorites</div>
+            <div className="stat-label">Favorit</div>
           </div>
           <div className="stat-item">
             <FileText size={20} className="stat-icon" stroke="var(--steel)" />
-            <div className="stat-val">{draftCount}</div>
-            <div className="stat-label">Saved Offline Drafts</div>
+            <div className="stat-val">{drafts.length}</div>
+            <div className="stat-label">Draft tersimpan</div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Profile Form */}
-      <form onSubmit={handleSaveProfile} className="profile-form">
-        <h3 className="section-title">Armorer Details</h3>
+      <section className="profile-section">
+        <h2 className="section-title">About</h2>
+        <p>Bore &amp; Barrel adalah katalog demo akademik untuk latihan Progressive Web App.</p>
+        <p>Data produk dan alur checkout ditampilkan sebagai simulasi, bukan transaksi nyata.</p>
+      </section>
 
-        <div className="form-group">
-          <label htmlFor="prof-name" className="form-label">
-            Callsign / Operator Alias
-          </label>
-          <input
-            id="prof-name"
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="e.g. Operator Delta, Master Gunsmith"
-            className="form-input"
-          />
+      <section className="profile-section">
+        <h2 className="section-title">Contact</h2>
+        <p>Alamat demo: 123 Range Road</p>
+        <p>Jam layanan demo: Selasa–Sabtu, 10.00–18.00</p>
+        <p>Telepon contoh: (555) 010-0100</p>
+      </section>
+
+      <section className="profile-section">
+        <div className="list-head">
+          <h2 className="section-title">Draft</h2>
+          <span className="count">{drafts.length} draft</span>
         </div>
-
-        <div className="form-group">
-          <label htmlFor="prof-bio" className="form-label">
-            Armory Notes / Station Bio
-          </label>
-          <textarea
-            id="prof-bio"
-            value={bio}
-            onChange={(e) => setBio(e.target.value)}
-            placeholder="Qualifications, preferred calibers, unit assignment..."
-            rows={3}
-            className="form-textarea"
-          />
-        </div>
-
-        <button type="submit" className="btn btn--primary">
-          <Save size={16} /> Save Armorer Profile
-        </button>
-      </form>
+        {drafts.length === 0 ? (
+          <p className="profile-empty">Belum ada draft tersimpan.</p>
+        ) : (
+          <ul className="draft-list">
+            {drafts.map((draft) => (
+              <li className="draft-item" key={`${draft.kind}-${draft.id}`}>
+                <div>
+                  <strong>{draft.name}</strong>
+                  <span>{draft.kind === 'catalog' ? 'Disimpan dari katalog' : draft.id === 'create' ? 'Draft produk baru' : `Draft edit · ID: ${draft.id}`}</span>
+                  <small>{draft.timestamp ? formatDraftTime(draft.timestamp) : 'Waktu tidak tersedia'}</small>
+                </div>
+                <div className="draft-actions">
+                  <button type="button" className="btn btn--outline btn--sm" onClick={() => onResumeDraft(draft)}>
+                    {draft.kind === 'catalog' ? 'Lihat katalog' : 'Lanjutkan'}
+                  </button>
+                  <button type="button" className="icon-btn" onClick={() => handleDeleteDraft(draft)} aria-label={`Hapus draft ${draft.name}`}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   )
 }

@@ -21,6 +21,13 @@ import {
 } from '../utils/draftStorage'
 import ConfirmModal from '../components/modals/ConfirmModal'
 
+const readImageDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(reader.result)
+  reader.onerror = () => reject(new Error('Selected image could not be read.'))
+  reader.readAsDataURL(file)
+})
+
 /**
  * CreateGunPage — Create a new weapon / hardware item with image upload,
  * draft persistence (auto-save), specs, and assembly steps.
@@ -44,6 +51,8 @@ export default function CreateGunPage({ onBack, onSuccess }) {
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
   const [uploadedImageUrl, setUploadedImageUrl] = useState('')
+  const [additionalImageUrls, setAdditionalImageUrls] = useState([])
+  const [uploadingAdditional, setUploadingAdditional] = useState(false)
 
   // Specifications (ingredients in API)
   const [specs, setSpecs] = useState([
@@ -73,6 +82,7 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       specs,
       steps,
       uploadedImageUrl,
+      additionalImageUrls,
     }
     const saved = saveDraft(draftData, 'create')
     if (saved) {
@@ -83,7 +93,7 @@ export default function CreateGunPage({ onBack, onSuccess }) {
         setTimeout(() => setSuccessMsg(''), 3000)
       }
     }
-  }, [formData, specs, steps, uploadedImageUrl])
+  }, [formData, specs, steps, uploadedImageUrl, additionalImageUrls])
 
   // Auto-save draft every 30 seconds while in form step
   useEffect(() => {
@@ -107,6 +117,7 @@ export default function CreateGunPage({ onBack, onSuccess }) {
         setImagePreview(draft.uploadedImageUrl)
         setCurrentStep('form')
       }
+      if (Array.isArray(draft.additionalImageUrls)) setAdditionalImageUrls(draft.additionalImageUrls)
       setShowDraftModal(false)
       setSuccessMsg('Draft successfully loaded.')
       setTimeout(() => setSuccessMsg(''), 4000)
@@ -138,6 +149,24 @@ export default function CreateGunPage({ onBack, onSuccess }) {
     setImageFile(file)
     setImagePreview(URL.createObjectURL(file))
     setError('')
+  }
+
+  const handleAdditionalImagesChange = async (e) => {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (files.length === 0) return
+    try {
+      setUploadingAdditional(true)
+      setError('')
+      const results = await Promise.all(files.map((file) => uploadService.uploadImage(file)))
+      const urls = results.map((result) => result.data?.url).filter(Boolean)
+      if (urls.length !== files.length) throw new Error('Some images could not be uploaded.')
+      setAdditionalImageUrls((current) => [...current, ...urls])
+    } catch (err) {
+      setError(err.message || 'Additional images could not be uploaded.')
+    } finally {
+      setUploadingAdditional(false)
+    }
   }
 
   // Quick fallback select vector from local assets
@@ -173,11 +202,32 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       }
     } catch (err) {
       console.warn('Upload API failed, falling back to local preview:', err)
-      // Allow fallback to image preview so the user can continue even if MinIO bucket is unreachable
-      setUploadedImageUrl(imagePreview || '/guns/pistol.svg')
-      setCurrentStep('form')
+      try {
+        const localImage = await readImageDataUrl(imageFile)
+        setUploadedImageUrl(localImage)
+        setImagePreview(localImage)
+        setError(`Upload failed; using a browser-local image. ${err.message || ''}`.trim())
+        setCurrentStep('form')
+      } catch (readError) {
+        setError(readError.message || 'Image could not be uploaded or read.')
+      }
     } finally {
       setUploading(false)
+    }
+  }
+
+  const handleContinueWithoutUpload = async () => {
+    try {
+      if (imageFile) {
+        const localImage = await readImageDataUrl(imageFile)
+        setUploadedImageUrl(localImage)
+        setImagePreview(localImage)
+      } else {
+        setUploadedImageUrl(imagePreview)
+      }
+      setCurrentStep('form')
+    } catch (err) {
+      setError(err.message || 'Selected image could not be read.')
     }
   }
 
@@ -262,6 +312,10 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       category: formData.category || 'makanan',
       description: formData.description.trim() || `${formData.type} caliber ${formData.caliber}.`,
       image_url: uploadedImageUrl || '/guns/pistol.svg',
+      image_urls: [
+        uploadedImageUrl || '/guns/pistol.svg',
+        ...additionalImageUrls,
+      ],
       prep_time: 15,
       cook_time: Number(formData.price) || 500, // Price stored in cook_time
       servings: Number(formData.servings) || 1,
@@ -431,10 +485,7 @@ export default function CreateGunPage({ onBack, onSuccess }) {
                 <button
                   type="button"
                   className="btn btn--outline"
-                  onClick={() => {
-                    setUploadedImageUrl(imagePreview)
-                    setCurrentStep('form')
-                  }}
+                  onClick={handleContinueWithoutUpload}
                 >
                   Continue without uploading
                 </button>
@@ -461,6 +512,34 @@ export default function CreateGunPage({ onBack, onSuccess }) {
             >
               Change Image
             </button>
+          </div>
+
+          <div className="form-fieldset">
+            <div className="fieldset-header">
+              <label className="form-label" htmlFor="additional-gun-images">Gambar tambahan</label>
+              <label htmlFor="additional-gun-images" className="btn btn--outline btn--sm">
+                <Plus size={14} /> Tambah gambar
+              </label>
+              <input
+                id="additional-gun-images"
+                type="file"
+                accept="image/jpeg,image/jpg,image/png,image/webp"
+                multiple
+                onChange={handleAdditionalImagesChange}
+                className="hidden-file-input"
+              />
+            </div>
+            {uploadingAdditional && <p className="form-hint">Mengunggah gambar…</p>}
+            <div className="image-url-grid">
+              {additionalImageUrls.map((url, index) => (
+                <div className="image-url-item" key={`${url}-${index}`}>
+                  <img src={url} alt={`Gambar tambahan ${index + 1}`} loading="lazy" />
+                  <button type="button" className="preview-remove-btn" onClick={() => setAdditionalImageUrls((images) => images.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Hapus gambar ${index + 1}`}>
+                    <X size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
 
           {/* Core Info */}

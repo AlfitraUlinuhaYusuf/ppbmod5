@@ -1,5 +1,6 @@
 import FavoriteButton from '../common/FavoriteButton'
 import { formatPrice, truncate } from '../../utils/helpers'
+import { BookmarkPlus, Plus, RotateCcw, Trash2 } from 'lucide-react'
 
 /**
  * Product card used in the catalog grid.
@@ -10,8 +11,17 @@ import { formatPrice, truncate } from '../../utils/helpers'
  * @param {Function} [props.onEdit]  — called when Edit is clicked (admin)
  * @param {Function} [props.onDelete]— called when Delete is clicked (admin)
  */
-export default function GunCard({ gun, onSelect, onEdit, onDelete }) {
-  const imgSrc = gun.image_url || gun.image || '/guns/pistol.svg'
+export default function GunCard({
+  gun,
+  onSelect,
+  onEdit,
+  onDelete,
+  onAddToCart,
+  onSaveDraft,
+  onRestore,
+  onPermanentlyDelete,
+}) {
+  const imgSrc = gun.image_urls?.[0] || gun.image_url || gun.image || '/guns/pistol.svg'
   const category = gun.type || gun.category || '—'
   const caliber = gun.caliber || gun.difficulty || ''
   const price = gun.price ?? gun.cook_time ?? 0
@@ -49,7 +59,31 @@ export default function GunCard({ gun, onSelect, onEdit, onDelete }) {
 
       {/* Floating actions row */}
       <div className="card-actions">
-        <FavoriteButton gunId={gun.id || gun.name} />
+        {!onRestore && <FavoriteButton gunId={gun.id || gun.name} />}
+
+        {onAddToCart && (
+          <button
+            type="button"
+            className="card-act-btn"
+            onClick={(e) => { e.stopPropagation(); onAddToCart(gun) }}
+            aria-label={`Add ${gun.name} to demo cart`}
+            title="Add to demo cart"
+          >
+            <Plus size={16} />
+          </button>
+        )}
+
+        {onSaveDraft && (
+          <button
+            type="button"
+            className="card-act-btn"
+            onClick={(e) => { e.stopPropagation(); onSaveDraft(gun) }}
+            aria-label={`Add ${gun.name} to drafts`}
+            title="Simpan ke Draft"
+          >
+            <BookmarkPlus size={16} />
+          </button>
+        )}
 
         {onEdit && (
           <button
@@ -72,6 +106,28 @@ export default function GunCard({ gun, onSelect, onEdit, onDelete }) {
             title="Delete"
           >
             🗑️
+          </button>
+        )}
+        {onRestore && (
+          <button
+            type="button"
+            className="card-act-btn"
+            onClick={(e) => { e.stopPropagation(); onRestore(gun) }}
+            aria-label={`Restore ${gun.name}`}
+            title="Restore"
+          >
+            <RotateCcw size={15} />
+          </button>
+        )}
+        {onPermanentlyDelete && (
+          <button
+            type="button"
+            className="card-act-btn card-act-btn--danger"
+            onClick={(e) => { e.stopPropagation(); onPermanentlyDelete(gun) }}
+            aria-label={`Permanently delete ${gun.name}`}
+            title="Delete permanently"
+          >
+            <Trash2 size={15} />
           </button>
         )}
       </div>

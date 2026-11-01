@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { RefreshCw, Plus, Loader, AlertCircle, PackageOpen } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { AlertCircle, ChevronLeft, ChevronRight, Loader, PackageOpen, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useGuns } from '../hooks/useGuns'
 import GUNS_LOCAL from '../data/guns'
 import GunCard from '../components/gun/GunCard'
@@ -7,134 +7,215 @@ import GunDetail from '../components/gun/GunDetail'
 import AdvancedFilter from '../components/common/AdvancedFilter'
 import ConfirmModal from '../components/modals/ConfirmModal'
 import gunService from '../services/gunService'
-import {
-  matchesSearch,
-  matchesCategory,
-  sortItems,
-  extractCategories,
-} from '../utils/helpers'
+import { saveCatalogDraft } from '../utils/catalogDraftStorage'
+import { matchesSearch, matchesCategory, sortItems, extractCategories } from '../utils/helpers'
 
-/**
- * Catalog page — the main product listing.
- *
- * Data source priority:
- *   1. Live API via useGuns()
- *   2. Local static array (GUNS_LOCAL) when the API is unreachable
- *
- * Features: search, category filter, sort, CRUD actions, detail modal.
- */
-export default function Catalog({ onNavigate }) {
-  // ---- API data ----
-  const { guns: apiGuns, loading, error, refetch } = useGuns({ limit: 50 })
+const PAGE_SIZE = 6
+
+export default function Catalog({ onNavigate, onAddToCart }) {
   const [useLocal, setUseLocal] = useState(false)
-
-  // Decide data source
-  const rawGuns = useMemo(() => {
-    if (useLocal || (error && apiGuns.length === 0)) {
-      // Enrich local data with synthetic ids so FavoriteButton and detail work
-      return GUNS_LOCAL.map((g, i) => ({ ...g, id: g.id || `local-${i}` }))
-    }
-    return apiGuns
-  }, [apiGuns, error, useLocal])
-
-  // ---- filters / sort ----
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('All')
   const [sortKey, setSortKey] = useState('name')
   const [sortOrder, setSortOrder] = useState('asc')
-
-  const categories = useMemo(() => extractCategories(rawGuns), [rawGuns])
-
-  const filteredGuns = useMemo(() => {
-    let result = rawGuns.filter(
-      (g) => matchesSearch(g, search) && matchesCategory(g, activeCategory),
-    )
-    return sortItems(result, sortKey, sortOrder)
-  }, [rawGuns, search, activeCategory, sortKey, sortOrder])
-
-  // ---- detail view ----
+  const [page, setPage] = useState(1)
+  const [showDeleted, setShowDeleted] = useState(false)
   const [selectedGun, setSelectedGun] = useState(null)
-
-  // ---- delete ----
   const [deleteTarget, setDeleteTarget] = useState(null)
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState('')
+  const [permanentTarget, setPermanentTarget] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
+  const [draftMessage, setDraftMessage] = useState('')
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return
+  const query = useMemo(() => ({
+    limit: PAGE_SIZE,
+    page,
+    search: search.trim(),
+    category: activeCategory,
+    sort_by: sortKey,
+    order: sortOrder,
+    include_deleted: showDeleted,
+  }), [page, search, activeCategory, sortKey, sortOrder, showDeleted])
+  const { guns: apiGuns, loading, error, pagination, refetch } = useGuns(query)
+
+  const rawGuns = useMemo(() => {
+    if (!showDeleted && (useLocal || (error && apiGuns.length === 0))) {
+      return GUNS_LOCAL.map((gun, index) => ({
+        ...gun,
+        id: gun.id || `local-${index}`,
+        image_urls: gun.image_urls || [gun.image],
+      }))
+    }
+    return apiGuns
+  }, [apiGuns, error, useLocal, showDeleted])
+  const categories = useMemo(() => extractCategories([...rawGuns, ...GUNS_LOCAL]), [rawGuns])
+  const filteredGuns = useMemo(() => sortItems(
+    rawGuns.filter((gun) => matchesSearch(gun, search) && matchesCategory(gun, activeCategory)),
+    sortKey,
+    sortOrder,
+  ), [rawGuns, search, activeCategory, sortKey, sortOrder])
+  const totalItems = useLocal
+    ? filteredGuns.length
+    : pagination?.total != null && Number.isFinite(Number(pagination.total))
+      ? Number(pagination.total)
+      : null
+  const totalPages = useLocal
+    ? Math.max(1, Math.ceil(totalItems / PAGE_SIZE))
+    : Number(pagination?.totalPages) || (pagination?.hasMore ? page + 1 : page)
+  const canGoNext = useLocal
+    ? page < totalPages
+    : Boolean(pagination?.hasMore)
+  const refreshAfterMutation = () => {
+    if (page === 1) return refetch()
+    setPage(1)
+  }
+
+  const handleSearch = (value) => {
+    setSearch(value)
+    setPage(1)
+  }
+  const handleCategory = (value) => {
+    setActiveCategory(value)
+    setPage(1)
+  }
+  const handleSort = ({ key, order }) => {
+    setSortKey(key)
+    setSortOrder(order)
+    setPage(1)
+  }
+  const toggleDeleted = () => {
+    setShowDeleted((value) => !value)
+    setUseLocal(false)
+    setPage(1)
+  }
+
+  const handleSaveDraft = (gun) => {
     try {
-      setDeleting(true)
-      setDeleteError('')
-      await gunService.deleteGun(deleteTarget.id)
-      setDeleteTarget(null)
-      refetch()
-    } catch (err) {
-      setDeleteError(err.message || 'Failed to delete.')
-    } finally {
-      setDeleting(false)
+      saveCatalogDraft(gun)
+      setDraftMessage(`"${gun.name}" disimpan ke Draft profil.`)
+      setActionError('')
+      return true
+    } catch (error) {
+      setDraftMessage('')
+      setActionError(error.message || 'Produk gagal disimpan ke Draft.')
+      return false
     }
   }
 
-  // ---- If viewing a single product detail ----
+  const handleSoftDelete = async () => {
+    if (!deleteTarget) return
+    try {
+      setBusy(true)
+      setActionError('')
+      await gunService.deleteGun(deleteTarget.id)
+      setDeleteTarget(null)
+      refreshAfterMutation()
+    } catch (action) {
+      setActionError(action.message || 'Produk gagal dipindahkan ke Sampah.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRestore = async (gun) => {
+    try {
+      setBusy(true)
+      setActionError('')
+      await gunService.restoreGun(gun.id)
+      refreshAfterMutation()
+    } catch (action) {
+      setActionError(action.message || 'Produk gagal dipulihkan.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handlePermanentDelete = async () => {
+    if (!permanentTarget) return
+    try {
+      setBusy(true)
+      setActionError('')
+      await gunService.permanentlyDeleteGun(permanentTarget.id)
+      setPermanentTarget(null)
+      refreshAfterMutation()
+    } catch (action) {
+      setActionError(action.message || 'Produk gagal dihapus permanen.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (selectedGun) {
     return (
       <GunDetail
         gun={selectedGun}
         onBack={() => setSelectedGun(null)}
-        onEdit={(g) => onNavigate && onNavigate('Edit', g)}
-        onDelete={(g) => { setSelectedGun(null); setDeleteTarget(g) }}
+        onEdit={showDeleted ? undefined : (gun) => onNavigate?.('Edit', gun)}
+        onDelete={showDeleted ? undefined : setDeleteTarget}
+        onAddToCart={showDeleted ? undefined : onAddToCart}
+        onSaveDraft={showDeleted ? undefined : handleSaveDraft}
       />
     )
   }
 
-  // ---- Main catalog view ----
+  const visibleGuns = useLocal
+    ? filteredGuns.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+    : filteredGuns
+  const pageWindowStart = Math.max(1, Math.min(page - 2, totalPages - 4))
+  const pageNumbers = Array.from(
+    { length: Math.max(0, Math.min(5, totalPages - pageWindowStart + 1)) },
+    (_, index) => pageWindowStart + index,
+  )
+
   return (
     <>
       <section className="masthead">
         <h1 className="display">Hardware, by the spec sheet.</h1>
         <p className="lede">
-          A small armory of pistols, rifles, and shotguns. Every piece listed
-          with its type, caliber, and price — nothing else.
+          Katalog demo. Gunakan pencarian dan filter, lalu navigasikan halaman katalog.
         </p>
       </section>
 
       <section>
         <div className="list-head">
-          <h2>Current stock</h2>
+          <h2>{showDeleted ? 'Sampah katalog' : 'Current stock'}</h2>
           <div className="list-head-right">
             <span className="count">
-              {filteredGuns.length} piece{filteredGuns.length !== 1 ? 's' : ''}
+              {totalItems ?? visibleGuns.length} item
+              {' · '}halaman {page}{totalPages > 1 ? ` dari ${totalPages}` : ''}
             </span>
-            {onNavigate && (
-              <button
-                type="button"
-                className="btn btn--primary btn--sm"
-                onClick={() => onNavigate('Create')}
-              >
+            <button type="button" className="btn btn--outline btn--sm" onClick={toggleDeleted}>
+              {showDeleted ? 'Kembali ke katalog' : <><Trash2 size={14} /> Sampah</>}
+            </button>
+            {!showDeleted && onNavigate && (
+              <button type="button" className="btn btn--primary btn--sm" onClick={() => onNavigate('Create')}>
                 <Plus size={16} /> Add
               </button>
             )}
           </div>
         </div>
 
-        {/* Filters */}
         <AdvancedFilter
           search={search}
-          onSearch={setSearch}
+          onSearch={handleSearch}
           categories={categories}
           activeCategory={activeCategory}
-          onCategory={setActiveCategory}
+          onCategory={handleCategory}
           sortKey={sortKey}
           sortOrder={sortOrder}
-          onSort={({ key, order }) => { setSortKey(key); setSortOrder(order) }}
+          onSort={handleSort}
         />
 
-        {/* States */}
-        {loading && (
-          <div className="state-box">
-            <Loader size={28} className="spin" />
-            <p>Loading products…</p>
-          </div>
+        {pagination?.localArchive && (
+          <p className="local-notice">
+            Sampah tersimpan di browser ini saja. Jalankan migrasi kolom Supabase dari README agar arsip tersinkron.
+          </p>
+        )}
+        {draftMessage && <div className="toast toast--success" role="status">{draftMessage}</div>}
+        {actionError && <div className="toast toast--error" role="alert">{actionError}</div>}
+
+        {loading && apiGuns.length === 0 && (
+          <div className="state-box"><Loader size={28} className="spin" /><p>Loading products…</p></div>
         )}
 
         {!loading && error && !useLocal && (
@@ -142,70 +223,99 @@ export default function Catalog({ onNavigate }) {
             <AlertCircle size={28} />
             <p>{error}</p>
             <div className="state-box__actions">
-              <button type="button" className="btn btn--outline" onClick={refetch}>
-                <RefreshCw size={16} /> Retry
-              </button>
-              <button
-                type="button"
-                className="btn btn--outline"
-                onClick={() => setUseLocal(true)}
-              >
-                View Local Catalog
-              </button>
+              <button type="button" className="btn btn--outline" onClick={refetch}><RefreshCw size={16} /> Retry</button>
+              {!showDeleted && <button type="button" className="btn btn--outline" onClick={() => { setUseLocal(true); setPage(1) }}>View Local Catalog</button>}
             </div>
           </div>
         )}
 
-        {!loading && filteredGuns.length === 0 && !error && (
-          <div className="state-box">
-            <PackageOpen size={28} />
-            <p>No products match your search.</p>
-          </div>
+        {!loading && visibleGuns.length === 0 && !error && (
+          <div className="state-box"><PackageOpen size={28} /><p>{showDeleted ? 'Sampah kosong.' : 'No products match your search.'}</p></div>
         )}
 
-        {/* Product grid */}
-        {filteredGuns.length > 0 && (
+        {visibleGuns.length > 0 && (
           <ul className="stock">
-            {filteredGuns.map((gun) => (
+            {visibleGuns.map((gun) => (
               <GunCard
                 key={gun.id || gun.name}
                 gun={gun}
                 onSelect={setSelectedGun}
-                onEdit={onNavigate ? (g) => onNavigate('Edit', g) : undefined}
-                onDelete={setDeleteTarget}
+                onEdit={!showDeleted && !String(gun.id).startsWith('local-') ? (item) => onNavigate?.('Edit', item) : undefined}
+                onDelete={!showDeleted && !String(gun.id).startsWith('local-') ? setDeleteTarget : undefined}
+                onAddToCart={!showDeleted ? onAddToCart : undefined}
+                onSaveDraft={!showDeleted ? handleSaveDraft : undefined}
+                onRestore={showDeleted ? handleRestore : undefined}
+                onPermanentlyDelete={showDeleted ? setPermanentTarget : undefined}
               />
             ))}
           </ul>
         )}
 
+        {(page > 1 || totalPages > 1 || canGoNext) && (
+          <nav className="catalog-pagination" aria-label="Pagination katalog">
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page === 1 || loading}
+              aria-label="Halaman sebelumnya"
+            >
+              <ChevronLeft size={16} /> Sebelumnya
+            </button>
+            <div className="catalog-pagination__pages">
+              {pageNumbers.map((pageNumber) => (
+                <button
+                  type="button"
+                  key={pageNumber}
+                  className={`catalog-pagination__page${pageNumber === page ? ' is-active' : ''}`}
+                  onClick={() => setPage(pageNumber)}
+                  disabled={loading || pageNumber === page}
+                  aria-current={pageNumber === page ? 'page' : undefined}
+                  aria-label={`Halaman ${pageNumber}`}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={() => setPage((current) => current + 1)}
+              disabled={!canGoNext || loading}
+              aria-label="Halaman berikutnya"
+            >
+              Berikutnya <ChevronRight size={16} />
+            </button>
+          </nav>
+        )}
+
         {useLocal && (
           <p className="local-notice">
             Showing local catalog (server unavailable).{' '}
-            <button
-              type="button"
-              className="link-btn"
-              onClick={() => { setUseLocal(false); refetch() }}
-            >
-              Retry server
-            </button>
+            <button type="button" className="link-btn" onClick={() => { setUseLocal(false); refetch() }}>Retry server</button>
           </p>
         )}
       </section>
 
-      {/* Delete confirmation */}
       <ConfirmModal
-        open={!!deleteTarget}
-        title="Delete Product"
-        message={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
-        confirmLabel="Delete"
-        danger
-        loading={deleting}
-        onConfirm={handleDelete}
-        onCancel={() => { setDeleteTarget(null); setDeleteError('') }}
+        open={Boolean(deleteTarget)}
+        title="Pindahkan ke Sampah"
+        message={`"${deleteTarget?.name}" akan dipindahkan ke Sampah dan dapat dipulihkan.`}
+        confirmLabel="Pindahkan"
+        loading={busy}
+        onConfirm={handleSoftDelete}
+        onCancel={() => setDeleteTarget(null)}
       />
-      {deleteError && (
-        <div className="toast toast--error">{deleteError}</div>
-      )}
+      <ConfirmModal
+        open={Boolean(permanentTarget)}
+        title="Hapus Permanen"
+        message={`"${permanentTarget?.name}" akan dihapus permanen dan tidak dapat dipulihkan.`}
+        confirmLabel="Hapus permanen"
+        danger
+        loading={busy}
+        onConfirm={handlePermanentDelete}
+        onCancel={() => setPermanentTarget(null)}
+      />
     </>
   )
 }
